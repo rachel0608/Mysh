@@ -1,6 +1,6 @@
 /*
     File: mysh.c
-    Name: Rachel Nguyen
+    Name: Rachel Nguyen, Julia Rieger
     Desc: A simple shell (mysh) that accept lines of text as input and execute 
     programs in response
 */
@@ -11,31 +11,21 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <readline/readline.h>
-#include <readline/history.h>
+#include <stdbool.h>
 
-#define MAX_ARGS 50 // including NULL-terminated
-#define DELIM " \t\n"
-#define EXIT "exit" // built-in commands
-#define HISTORY "history" // built-in commands
-#define MAX_HIST 50
+#define MAX_ARGS 51 // max number of arguments, including NULL
+#define DELIM " \t\n&" // delimiters to tokenize user input command
+#define EXIT "exit" // built-in command: exit
 
-char **parse_command(char *command_line);
+char **parse_command(char *command_line, bool *background);
+void execute_command(char **args, bool *background);
 int check_blank_input(char *command_line);
 int is_built_in(char *args);
-void print_history(int hist_size);
+void free_args(char **args);
 
 int main() {
-    // initialize and manage history
-    int hist_size = MAX_HIST;
-    char *hist_size_str = getenv("HISTSIZE");
-    if (hist_size_str != NULL) {
-        hist_size = atoi(hist_size_str);
-    }
-    using_history();
-    stifle_history(hist_size);
-
     // continuosly prompt user to enter command
-    while (1) {
+    while (true) {
         // print prompt
         char *command_line = readline("$ ");
 
@@ -44,80 +34,54 @@ int main() {
             continue;
         }
 
-        add_history(command_line);
-
         // parse command line into argument
-        char **args = parse_command(command_line);
+        bool background = false;
+        char **args = parse_command(command_line, &background);
         free(command_line);
         if (args == NULL) {
             printf("Error parsing command.\n");
             continue;
         }
 
-        // check whether argument is built in command
+        // check whether argument is built in command, then execute in fg
         if (is_built_in(args[0])) {
             // exit
             if (strcmp(EXIT, args[0]) == 0) {
                 printf("Goodbye!\n");
-                for (int i = 0; args[i] != NULL; i++) {
-                    free(args[i]);
-                }
-                free(args);
+                free_args(args);
                 break;
             }
-            // history
-            else if (strcmp(HISTORY, args[0]) == 0) {
-                print_history(hist_size);
-                // Free allocated memory
-                for (int i = 0; args[i] != NULL; i++) {
-                    free(args[i]);
-                }
-                free(args);
-            } 
         } else {
             // execute command
-            pid_t pid = fork();
-            if (pid < 0) {
-                perror("fork");
-                for (int i = 0; args[i] != NULL; i++) {
-                    free(args[i]);
-                }
-                free(args);
-                exit(EXIT_FAILURE);
-            } else if (pid == 0) {
-                // child process executes
-                if (execvp(args[0], args) == -1) {
-                    perror("execvp");
-                    for (int i = 0; args[i] != NULL; i++) {
-                        free(args[i]);
-                    }
-                    free(args);
-                    exit(EXIT_FAILURE);
-                } 
-            } else { 
-                // parent process waits
-                int status;
-                waitpid(pid, &status, 0);
-            }
-
-            for (int i = 0; args[i] != NULL; i++) {
-                free(args[i]);
-            }
-            free(args);
+            execute_command(args, &background);
+            free_args(args);
         }
     }
     return 0;
 }
 
-/*
-    Parse the user input into the argument, return NULL if failed
-*/
-char **parse_command(char *command_line) {
+/**
+ * @brief Parse the user input into the argument
+ *
+ * @param command_line Input from user
+ * @return An array of args on success, NULL on error
+ */
+char **parse_command(char *command_line, bool *background) {
+    // check if user enter only delim
+    bool is_input_delim = strspn(command_line, DELIM) == strlen(command_line);
+    if (is_input_delim) {
+        return NULL;
+    }
+
     char **args = malloc(MAX_ARGS * sizeof(char *)); // a list of args to be returned
     if (args == NULL) {
         perror("malloc");
         return NULL;
     }
+
+    // check if user enter &
+    size_t len = strlen(command_line);
+    *background = (command_line[len - 1] == '&');
 
     // tokenize the input
     char *token = strtok(command_line, DELIM);
@@ -126,12 +90,7 @@ char **parse_command(char *command_line) {
         args[i] = strdup(token); 
         if (args[i] == NULL) {
             perror("strdup");
-
-            for (int j = 0; j < i; j++) {
-                free(args[j]);
-            }
-            free(args);
-
+            free_args(args);
             return NULL;
         }
         token = strtok(NULL, DELIM);
@@ -140,10 +99,7 @@ char **parse_command(char *command_line) {
 
     if (i == MAX_ARGS - 1 && token != NULL) {
         printf("Error: Too many arguments\n");
-        for (int j = 0; j < i; j++) {
-            free(args[j]);
-        }
-        free(args);
+        free_args(args);
         return NULL;
     }
 
@@ -151,48 +107,81 @@ char **parse_command(char *command_line) {
     return args;
 }
 
-/*
-    Check if user enter nothing or a list of white spaces
-*/
+/**
+ * @brief Check whether user enters a blank input
+ *
+ * @param command_line Input from user
+ * @return true if it is a blank input, false otherwise
+ */
 int check_blank_input(char *command_line) {
     if (command_line == NULL) {
-        return 1;
+        return true;
     } 
 
     while (*command_line != '\0') {
         if (!isspace(*command_line)) {
-            return 0;
+            return false;
         }
         command_line++;
     }
-    return 1;
+
+    return true;
 }
 
-/*
-    Check if the input command is a built-in argument
-*/
+/**
+ * @brief Check if an argument is a built-in command
+ *
+ * @param args The argument (after parsed)
+ * @return true if it is a built-in command, false otherwise
+ */
 int is_built_in(char *args) {
-    char *built_in_commands[] = {EXIT, HISTORY, NULL};
+    char *built_in_commands[] = {EXIT, NULL};
     for (int i = 0; built_in_commands[i] != NULL; i++) {
         if (strcmp(args, built_in_commands[i]) == 0) {
-            return 1; 
+            return true; 
         }
     }
-    return 0;
+    return false;
 }
 
-/*
-    Print history
-*/
-void print_history(int hist_size) {
-    HIST_ENTRY **hist_list = history_list();
-    if (hist_list == NULL) {
-        perror("history_list");
-        return;
+/**
+ * @brief Free the argument (an array of strings)
+ *
+ * @param args The argument 
+ */
+void free_args(char **args) {
+    for (int i = 0; args[i] != NULL; i++) {
+        free(args[i]);
     }
+    free(args);
+}
 
-    for (int i = 0; i < hist_size && hist_list[i] != NULL; i++) {
-        int hist_num = i+1;
-        printf("%d: %s\n", hist_num, hist_list[i]->line);
+/**
+ * @brief Execute the given command
+ *
+ * @param args The arguments for the command
+ * @param background Flag indicating whether the command should run in the background
+ */
+void execute_command(char **args, bool *background) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        free_args(args);
+        exit(EXIT_FAILURE);
+    } else if (pid == 0) {
+        if (execvp(args[0], args) == -1) {
+            perror("execvp");
+            free_args(args);
+            exit(EXIT_FAILURE);
+        } 
+    } else {
+        if (!*background) {
+            int status;
+            waitpid(pid, &status, 0);
+        } else {
+            printf("Sending job to background...\n");
+            // don't wait for child
+            // add child to the job queue
+        }
     }
 }
