@@ -40,6 +40,10 @@ char *job_to_string(const Job *j) {
   return print;
 } //job_to_string()
 
+void reset_job_count() {
+    job_count = 1;
+} //reset_job_count()
+
 void set_job_status(Job *j, int status) {
     j->status = status; //suspended = 0, running = 1
 } //set_job_status()
