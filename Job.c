@@ -7,12 +7,16 @@
 #include "Job.h"
 #define TO_STRING_CHARS 36 //pid_t = 10 chars, command = 24 chars, status = 1 char
 
+int job_count = 1;
+
 //given process ID and command, create Job (init as running by default)
 Job *new_job(pid_t pid, char *command) {
     Job *J = malloc(sizeof(Job));
     J->pid = pid;
     J->command = command;
     J->status = 1; //status is running (1) by default
+    J->jid = job_count;
+    job_count++;
     return J;
 } //new_job()
 
@@ -30,9 +34,10 @@ int get_status(const Job *j) {
 
 //print <pid: command | status>
 char *job_to_string(const Job *j) {
-    char* print = malloc(TO_STRING_CHARS); 
-    sprintf(print, "<%d: %s | %d>", get_pid(j), get_command(j), get_status(j));
-    return print;
+  // char *print = malloc(TO_STRING_CHARS); 
+  // sprintf(print, "<%d: %s | %d>", get_pid(j), get_command(j), get_status(j));
+  char *print = get_pid(j) + get_command(j) + get_status(j);
+  return print;
 } //job_to_string()
 
 void set_job_status(Job *j, int status) {
