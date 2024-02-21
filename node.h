@@ -10,6 +10,6 @@ struct Node {
     struct Node *next; //next node in Queue
 };
 
-struct Node *newNode(Job *data);
+struct Node *new_node(Job *data);
 
 #endif
