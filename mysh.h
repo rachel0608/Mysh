@@ -12,7 +12,7 @@
 #include <stdbool.h>
 #include <signal.h>
 #include <pthread.h>
-#include "JobLL"
+#include "JobLL.h"
 
 #define MAX_ARGS 5 // max number of arguments, including NULL
 #define DELIM " \t\n" // delimiters to tokenize user input command
