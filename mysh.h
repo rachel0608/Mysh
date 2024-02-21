@@ -28,12 +28,6 @@ typedef struct {
     bool bg;
 } Command;
 
-//global vars
-volatile sig_atomic_t sigchld_received = 0; // flag for sig_chld_handler to update
-volatile sig_atomic_t sigtstp_received = 0; // flag for sig_tstp_handler to update
-volatile pid_t pid_to_update; //pid of Job to update
-pid_t foreground_pid = -1;  // Initialize to an invalid PID, set in execute_command
-
 //function prototypes
 char **parse_command(Command *command); 
 void execute_command(char **args, bool bg);
