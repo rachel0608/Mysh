@@ -23,7 +23,11 @@ int main() {
     job_list = new_list();
 
     while (true) {
-		
+        //iter through joblist, handle jobs with flags on
+            //block signals?
+            //unpack struct
+            //if a job's flag is on call handle_child() or handle_tstp()
+
         // print prompt
         char *input = readline("$ ");
 
@@ -199,17 +203,14 @@ void execute_command(char **args, bool background) {
 
         if (!background) { //if job is foregrounded
 
+            foreground_pid = pid; //set foreground pid global to be used in case of ctrl z
             if (tcsetpgrp(STDIN_FILENO, pid) == -1) { //give terminal to child
                 perror("tcsetpgrp");
                 exit(EXIT_FAILURE);
             }
-            foreground_pid = pid; //set foreground pid global to be used in case of ctrl z
             wpid = waitpid(pid, &status, 0); //shell waits for child process
-            if (WIFSTOPPED(status)) { //ex) ctrl z interrupted
-                save_child_terminal_settings(child); //save terminal settings for Job if child was suspended
-                handle_flag_true(child, TRUE); //child needs to be handled
-                update_joblist(child->pid, STATUS_SUSPEND); 
-            } //else child is done and no action necessary from shell
+            //if child was interrupted, sig handler will handle
+            //else child is done and no action necessary from shell
             if (tcsetpgrp(STDIN_FILENO, shell_pid) == -1) { //give fg back to shell
                 perror("tcsetpgrp");
                 exit(EXIT_FAILURE);
@@ -221,23 +222,7 @@ void execute_command(char **args, bool background) {
 
             printf("Sending job to background...\n");
             add_job(job_list, child); //add child to LL
-            do { //'wait' for something to happen to child
-                wpid = waitpid(pid, &status, WUNTRACED);
-            } while (!WIFEXITED(status) && !WIFSIGNALED(status) && !WIFSTOPPED(status)); //aka while running
-
-            if (WIFEXITED(status)) {
-                printf("[%d] exited with status %d\n", child->jid, WEXITSTATUS(status));
-                handle_flag_true(child, TRUE); //child needs to be handled
-                update_joblist(child->pid, STATUS_TERMINATE); 
-            } else if (WIFSIGNALED(status)) {
-                printf("[%d] terminated by signal %d\n", child->jid, WTERMSIG(status));
-                handle_flag_true(child, TRUE); //child needs to be handled
-                update_joblist(child->pid, STATUS_TERMINATE); 
-            } else if (WIFSTOPPED(status)) {
-                printf("[%d] stopped by signal %d\n", child-> jid, WSTOPSIG(status));
-                handle_flag_true(child, TRUE); //child needs to be handled
-                update_joblist(child->pid, STATUS_SUSPEND); 
-            }
+            wpid = waitpid(pid, &status, WUNTRACED);
         }
     }
 }
@@ -397,8 +382,42 @@ void free_command_list(Command **commands) {
     free(commands);
 }
 
-void update_joblist(pid_t pid_to_update, int status_to_update) {
-	//if joblist doesn't contain job with pid_to_update, return error
+void update_joblist(pid_t pid, int status_to_update) {
+    if ((find_job(job_list, pid) < 0) || pid == foreground_pid) { //job to update is in the foreground
+        if (status_to_update == STATUS_TERMINATE) {  
+            //print to terminal and exit status global
+
+        } else if (status_to_update == STATUS_SUSPEND) {
+            //update job status
+            //add to list
+            //save pid term settings
+            //give term to shell
+            //restore shell term settings
+            //print jobs
+        }
+    }
+    else { //job to update is in the joblist
+        if (status_to_update == STATUS_TERMINATE) {
+            //update job status
+            get_nth_job(find_job(job_list, pid))->status = STATUS_TERMINATE;
+            //print to terminal exit status global
+            //remove from list
+        } else if (status_to_update == STATUS_SUSPEND) {
+            //update job status
+            //print jobs
+        } else if (status_to_update == STATUS_RESUME) {
+            kill(pid, SIGCONT);
+            //update job status
+            //print jobs
+        } else if (status_to_update == STATUS_RESUME_FG) {
+            //call fg on the job: give job term (below), update status, and resume execution
+            //print jobs
+
+            //save shell term settings
+            //give term to pid
+            restore_child_terminal_settings(get_nth_job(find_job(job_list, pid))); //restore pid term settings
+        }
+    }
 	//find job in list
 		//if WIFEXITED-> status = STATUS_TERMINATE, update job status, print to terminal (also print exit status global), and remove from list
         	//if WIFSIGNALED child process terminated by signal -> killed -> treat same as WIFEXITED?
@@ -407,7 +426,7 @@ void update_joblist(pid_t pid_to_update, int status_to_update) {
             //remember restore_child_terminal_settings when resuming in fg
 
 
-    //hangle_flag_true(job, FALSE) aka reset flag
+    hangle_flag_true(get_nth_job(find_job(job_list, pid)), FALSE) //aka reset flag
 
 }
 
@@ -423,34 +442,38 @@ void block_sigchld(int block) {
     }
 }
 
+//set Job's flag-> make a struct to contain flag, status, and exit status?
 void sig_chld_handler(int sig, siginfo_t *info, void *ucontext) {
     block_sigchld(TRUE); //block SIGCHLD
-    pid_to_update = info->si_pid;	//store pid and status and exit status in globals (critical region)
+    get_nth_job(find_job(job_list, info->si_pid))->sigchld_flag = info->si_code; //set flag to status of child
+        //handle_flag_true(get_nth_job(job_list, (job_list, job_pid)), TRUE); //set job's flag
+
+    /* pid_to_update = info->si_pid;	//store pid and status and exit status in globals (critical region)
     status_of_child = info->si_code;
-    exit_status = info->si_status;
+    exit_status = info->si_status; */
     block_sigchld(FALSE); //unblock SIGCHLD
-    //NOW handle_child needs to be called with pid_to_update somehow
 }
 
-void handle_child(pid_t job_pid) {
-    handle_flag_true(remove_nth_job(job_list, (job_list, job_pid)), TRUE); //set job's flag
-
+//to be called from main loop to do necessary work on a SIGCHLDed job
+void handle_child(Job *child) {
+    //unpack struct/recieve struct from shell containing info: child status and exit status
     if (status_of_child == CLD_EXITED || status_of_child == CLD_KILLED)
-        update_joblist(job_pid, STATUS_TERMINATE); //terminate job with pid_to_update	
+        update_joblist(child->pid, STATUS_TERMINATE); //terminate job with pid_to_update	
     else if (status_of_child == CLD_STOPPED)
-	    update_joblist(job_pid, STATUS_SUSPEND); //suspend job with pid_to_update	
+	    update_joblist(child->pid, STATUS_SUSPEND); //suspend job with pid_to_update	
 }
 
+//set Job's flag->interrupted
 void sig_tstp_handler(int sig, siginfo_t *info, void *ucontext) {
     block_sigchld(TRUE); //block SIGCHLD
-    pid_to_update = info->si_pid;
+    handle_tstpflag_true(get_nth_job(job_list, (job_list, info->si_pid)), TRUE); //set job's flag
     block_sigchld(FALSE); //unblock SIGCHLD
-    //NOW handle_tstp needs to be called with pid_to_update somehow
 } 
 
-void handle_tstp(pid_t job_pid) {
-    handle_flag_true(remove_nth_job(job_list, (job_list, job_pid)), TRUE); //set job's flag
-    update_joblist(job_pid, STATUS_SUSPEND); //suspend job with pid_to_update 
+//to be called from main loop to do necessary work on an interrupted/stopped job
+void handle_tstp(Job *child) {
+    save_child_terminal_settings(child); //save terminal settings for Job if child was suspended
+    update_joblist(child->pid, STATUS_SUSPEND); //suspend job with pid_to_update 
 }
 
 void sig_cont_handler(int sig, siginfo_t *info, void *ucontext) {
