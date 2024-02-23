@@ -7,11 +7,12 @@ int job_count = 1; //global var to keep track of how many jobs are in list
 //given process ID and command, create Job (init as running by default)
 Job *new_job(pid_t pid, char *command) {
     Job *J = malloc(sizeof(Job));
+    J->jid = job_count;
     J->pid = pid;
     J->command = command;
-    J->status = 1; //status is running (1) by default
-    J->jid = job_count;
+    J->status = 0; //status is running (0) by default
     job_count++;
+    J->handle_flag = 0; //child does not need handling (yet)
     return J;
 } //new_job()
 
