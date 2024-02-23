@@ -5,33 +5,25 @@
     programs in response
 */
 
+#include <signal.h>
 #include "mysh.h"
 
 //global vars
-volatile sig_atomic_t sigchld_received = 0; // flag for sig_chld_handler to update
-volatile sig_atomic_t sigtstp_received = 0; // flag for sig_tstp_handler to update
 volatile pid_t pid_to_update; //pid of Job to update
+volatile int status_of_child; //pid of Job to update
+volatile int exit_status; //exit status of child if SIGCHLD -> CLD_EXITED 
 pid_t foreground_pid = -1;  // Initialize to an invalid PID, set in execute_command
+struct termios saved_terminal_settings; // Global variable to store the original terminal settings
+JobLL *job_list; //global job list of all jobs
 
 int main() {
     
     setup_sighandlers();
     bool exit = false;
+    job_list = new_list();
 
     while (true) {
-		if (sigchld_received) {
-            block_sigchld(TRUE); //block SIGCHLD
-			update_joblist(pid_to_update, STATUS_TERMINATE); //terminate job with pid_to_update	
-            sigchld_received = FALSE; // Reset the flag 	
-            block_sigchld(FALSE); //unblock SIGCHLD
-		}
-        if (sigtstp_received) {
-            pid_t curr_foreground_pid = foreground_pid; //set temp pid to current fg job's pid
-            kill(curr_foreground_pid, SIGSTOP);  // Send SIGSTOP to the foreground process
-            update_joblist(curr_foreground_pid, STATUS_SUSPEND); //suspend job in the foreground
-            sigtstp_received = FALSE; // Reset the flag 	
-        }
-
+		
         // print prompt
         char *input = readline("$ ");
 
@@ -175,28 +167,77 @@ void free_args(char **args) {
  * @param background Flag indicating whether the command should run in the background
  */
 void execute_command(char **args, bool background) {
+    pid_t shell_pid = getpid(); // Save the shell's PID
+    save_terminal_settings(); //Save the original terminal settings
     pid_t pid = fork();
-    if (pid < 0) {
+    
+    if (pid < 0) { //if error
         perror("fork");
         free_args(args);
         exit(EXIT_FAILURE);
-    } else if (pid == 0) {
-        setpgid(0, 0);  // Set the child process to a new process group
 
-        if (execvp(args[0], args) == -1) {
+    } else if (pid == 0) { //in child
+
+        pid_t child_pid = getpid(); // get child's pid
+        if (setpgid(child_pid, child_pid) == -1) {  // Assign the child process to a new process group with its own PID
+            perror("setpgid");
+            exit(EXIT_FAILURE);
+        }
+        setup_child_sighandlers(); //install child sig handlers
+        set_default_signal_mask(); //set signal masks back to default before replacing child
+        if (execvp(args[0], args) == -1) { //execute/replace child
             perror("execvp");
             free_args(args);
             exit(EXIT_FAILURE);
         } 
-    } else {
-        foreground_pid = pid; //set foreground pid global to be used in case of ctrl z
-        if (!background) {
-            int status;
-            waitpid(pid, &status, 0);
-        } else {
+
+    } else { //in parent (shell)
+        pid_t wpid;
+        int status;
+        setpgid(pid, pid);  // Set the child process to a new process group
+        Job *child = new_job(pid, args[0]); //create Job
+
+        if (!background) { //if job is foregrounded
+
+            if (tcsetpgrp(STDIN_FILENO, pid) == -1) { //give terminal to child
+                perror("tcsetpgrp");
+                exit(EXIT_FAILURE);
+            }
+            foreground_pid = pid; //set foreground pid global to be used in case of ctrl z
+            wpid = waitpid(pid, &status, 0); //shell waits for child process
+            if (WIFSTOPPED(status)) { //ex) ctrl z interrupted
+                save_child_terminal_settings(child); //save terminal settings for Job if child was suspended
+                handle_flag_true(child, TRUE); //child needs to be handled
+                update_joblist(child->pid, STATUS_SUSPEND); 
+            } //else child is done and no action necessary from shell
+            if (tcsetpgrp(STDIN_FILENO, shell_pid) == -1) { //give fg back to shell
+                perror("tcsetpgrp");
+                exit(EXIT_FAILURE);
+            }
+            foreground_pid = shell_pid; //update foreground_pid to shell
+            restore_terminal_settings(); //restore original shell settings
+        
+        } else { //if job is backgrounded
+
             printf("Sending job to background...\n");
-            // don't wait for child
-            // add child to the job queue
+            add_job(job_list, child); //add child to LL
+            do { //'wait' for something to happen to child
+                wpid = waitpid(pid, &status, WUNTRACED);
+            } while (!WIFEXITED(status) && !WIFSIGNALED(status) && !WIFSTOPPED(status)); //aka while running
+
+            if (WIFEXITED(status)) {
+                printf("[%d] exited with status %d\n", child->jid, WEXITSTATUS(status));
+                handle_flag_true(child, TRUE); //child needs to be handled
+                update_joblist(child->pid, STATUS_TERMINATE); 
+            } else if (WIFSIGNALED(status)) {
+                printf("[%d] terminated by signal %d\n", child->jid, WTERMSIG(status));
+                handle_flag_true(child, TRUE); //child needs to be handled
+                update_joblist(child->pid, STATUS_TERMINATE); 
+            } else if (WIFSTOPPED(status)) {
+                printf("[%d] stopped by signal %d\n", child-> jid, WSTOPSIG(status));
+                handle_flag_true(child, TRUE); //child needs to be handled
+                update_joblist(child->pid, STATUS_SUSPEND); 
+            }
         }
     }
 }
@@ -359,9 +400,14 @@ void free_command_list(Command **commands) {
 void update_joblist(pid_t pid_to_update, int status_to_update) {
 	//if joblist doesn't contain job with pid_to_update, return error
 	//find job in list
-		//if STATUS_TERMINATE, update job status, print to terminal, and remove from list
-		//if STATUS_SUSPEND (aka pause a running job) update job status, add to list (?), print jobs
-		//if STATUS_RESUME (aka resume suspended job) kill -CONT <pid>, update job status, print jobs
+		//if WIFEXITED-> status = STATUS_TERMINATE, update job status, print to terminal (also print exit status global), and remove from list
+        	//if WIFSIGNALED child process terminated by signal -> killed -> treat same as WIFEXITED?
+        //if WIFSTOPPED-> status=STATUS_SUSPEND, (a fg running job was stopped/blocked), update job status, add to list, print jobs
+		//if none (default) -> status=STATUS_RESUME (aka resume suspended job) kill -CONT <pid>, update job status, print jobs
+            //remember restore_child_terminal_settings when resuming in fg
+
+
+    //hangle_flag_true(job, FALSE) aka reset flag
 
 }
 
@@ -379,31 +425,113 @@ void block_sigchld(int block) {
 
 void sig_chld_handler(int sig, siginfo_t *info, void *ucontext) {
     block_sigchld(TRUE); //block SIGCHLD
-    pid_to_update = info->si_pid;	//store pid and status in globals (critical region)
-    sigchld_received = TRUE;	//set sigchld_received flag to update JobLL
+    pid_to_update = info->si_pid;	//store pid and status and exit status in globals (critical region)
+    status_of_child = info->si_code;
+    exit_status = info->si_status;
     block_sigchld(FALSE); //unblock SIGCHLD
+    //NOW handle_child needs to be called with pid_to_update somehow
 }
 
-void sig_tstp_handler(int signo) {
-    sigtstp_received = TRUE;	//set sigtstp_received flag to stop fg job
+void handle_child(pid_t job_pid) {
+    handle_flag_true(remove_nth_job(job_list, (job_list, job_pid)), TRUE); //set job's flag
+
+    if (status_of_child == CLD_EXITED || status_of_child == CLD_KILLED)
+        update_joblist(job_pid, STATUS_TERMINATE); //terminate job with pid_to_update	
+    else if (status_of_child == CLD_STOPPED)
+	    update_joblist(job_pid, STATUS_SUSPEND); //suspend job with pid_to_update	
+}
+
+void sig_tstp_handler(int sig, siginfo_t *info, void *ucontext) {
+    block_sigchld(TRUE); //block SIGCHLD
+    pid_to_update = info->si_pid;
+    block_sigchld(FALSE); //unblock SIGCHLD
+    //NOW handle_tstp needs to be called with pid_to_update somehow
+} 
+
+void handle_tstp(pid_t job_pid) {
+    handle_flag_true(remove_nth_job(job_list, (job_list, job_pid)), TRUE); //set job's flag
+    update_joblist(job_pid, STATUS_SUSPEND); //suspend job with pid_to_update 
+}
+
+void sig_cont_handler(int sig, siginfo_t *info, void *ucontext) {
+    //handle SIGCONT from parent process attempting to resume child process that is suspended
 }
 
 void setup_sighandlers() {
-    struct sigaction sa_tstp, sa_chld;
+    //ignore interrupt signals
+    signal(SIGTSTP, SIG_IGN);
+    signal(SIGTERM, SIG_IGN);
+    signal(SIGINT, SIG_IGN);
+    signal(SIGTTIN, SIG_IGN);
+    signal(SIGTTOU, SIG_IGN);
+    signal(SIGQUIT, SIG_IGN);
+    struct sigaction sa_chld;
     //set up signal handler for SIGCHLD
     sa_chld.sa_sigaction = sig_chld_handler;     
     sigemptyset(&sa_chld.sa_mask);
-    sa_chld.sa_flags = SA_SIGINFO; 
+    sa_chld.sa_flags = SA_RESTART | SA_SIGINFO; 
     if (sigaction(SIGCHLD, &sa_chld, NULL) == -1) { 
 	    perror("Error setting up sigchld handler"); 
 	    exit(EXIT_FAILURE); 
     }
-    // Set up the signal handler for SIGTSTP (Ctrl-Z)
-    sa_tstp.sa_handler = sig_tstp_handler;
+}
+
+void setup_child_sighandlers() {
+    struct sigaction sa_tstp;
+    //set up signal handler for SIGCHLD
+    sa_tstp.sa_sigaction = sig_tstp_handler;     
     sigemptyset(&sa_tstp.sa_mask);
-    sa_tstp.sa_flags = 0;
+    sa_tstp.sa_flags = SA_RESTART | SA_SIGINFO; 
     if (sigaction(SIGTSTP, &sa_tstp, NULL) == -1) { 
 	    perror("Error setting up sigtstp handler"); 
 	    exit(EXIT_FAILURE); 
+    }
+}
+
+void set_default_signal_mask() {
+    sigset_t default_mask;
+    
+    // Initialize a signal set representing the default signal mask
+    if (sigemptyset(&default_mask) == -1 || sigfillset(&default_mask) == -1) {
+        perror("sigemptyset/sigfillset");
+        exit(EXIT_FAILURE);
+    }
+
+    // Set the default signal mask
+    if (sigprocmask(SIG_SETMASK, &default_mask, NULL) == -1) {
+        perror("sigprocmask");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void save_terminal_settings() {
+    // Save the current terminal settings
+    if (tcgetattr(STDIN_FILENO, &saved_terminal_settings) == -1) {
+        perror("tcgetattr");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void restore_terminal_settings() {
+    // Restore the original terminal settings
+    if (tcsetattr(STDIN_FILENO, TCSADRAIN, &saved_terminal_settings) == -1) {
+        perror("tcsetattr");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void save_child_terminal_settings(Job *child) {
+    // Save the current terminal settings for the child
+    if (tcgetattr(STDIN_FILENO, child->setting) == -1) {
+        perror("tcgetattr");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void restore_child_terminal_settings(Job *child) {
+    // Restore the original terminal settings for the child
+    if (tcsetattr(STDIN_FILENO, TCSADRAIN, child->setting) == -1) {
+        perror("tcsetattr");
+        exit(EXIT_FAILURE);
     }
 }
