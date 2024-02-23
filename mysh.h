@@ -10,8 +10,10 @@
 #include <sys/wait.h>
 #include <readline/readline.h>
 #include <stdbool.h>
-#include <signal.h>
 #include <pthread.h>
+#include <signal.h>
+#include <termios.h>
+#include <errno.h>
 #include "JobLL.h"
 
 #define MAX_ARGS 5 // max number of arguments, including NULL
@@ -41,8 +43,17 @@ void free_args(char **args);
 void free_command_list(Command **commands);
 void update_joblist(pid_t pid_to_update, int status_to_update); //update JOBLL based on what signals were caught: finds job in LL with pid "pid_to_update", sets status to "status_to_update"
 void block_sigchld(int block); //function to block or unblock SIGCHLD- signal masking
-void sig_chld_handler(int sig, siginfo_t *info, void *ucontext); //handles SIGCHLD
-void sig_tstp_handler(int signo); //handles SIGTSTP
+void sig_chld_handler(int sig, siginfo_t *info, void *ucontext); //for shell to handle SIGCHLD
+void sig_tstp_handler(int sig, siginfo_t *info, void *ucontext); //for child to handle SIGTSTP
+void sig_cont_handler(int sig, siginfo_t *info, void *ucontext); //for child to handle SIGCONT
 void setup_sighandlers(); //sets up signal handlers with sigaction()
+
+void setup_child_sighandlers();
+void set_default_signal_mask();
+void save_terminal_settings();
+void restore_terminal_settings();
+void save_child_terminal_settings(Job *child);
+void restore_child_terminal_settings(Job *child);
+void handle_child(pid_t job_pid);
 
 #endif
