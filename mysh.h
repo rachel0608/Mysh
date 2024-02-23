@@ -19,6 +19,7 @@
 #define MAX_ARGS 5 // max number of arguments, including NULL
 #define DELIM " \t\n" // delimiters to tokenize user input command
 #define EXIT "exit" // built-in command: exit
+#define STATUS_RESUME_FG    3
 #define STATUS_TERMINATE    2
 #define STATUS_SUSPEND  1
 #define STATUS_RESUME   0
@@ -43,17 +44,19 @@ void free_args(char **args);
 void free_command_list(Command **commands);
 void update_joblist(pid_t pid_to_update, int status_to_update); //update JOBLL based on what signals were caught: finds job in LL with pid "pid_to_update", sets status to "status_to_update"
 void block_sigchld(int block); //function to block or unblock SIGCHLD- signal masking
+void setup_sighandlers(); //sets up signal handlers with sigaction()
+void setup_child_sighandlers(); //set up Job's signal handlers with sigaction
+void set_default_signal_mask(); //sets signal masks back to default for children at the shell
+void save_terminal_settings(); //save shell's term settings
+void restore_terminal_settings(); //restore shell's term settings
+void save_child_terminal_settings(Job *child); //save child's term settings
+void restore_child_terminal_settings(Job *child); //restore child's term settings
+
+//these need implementation help
 void sig_chld_handler(int sig, siginfo_t *info, void *ucontext); //for shell to handle SIGCHLD
 void sig_tstp_handler(int sig, siginfo_t *info, void *ucontext); //for child to handle SIGTSTP
 void sig_cont_handler(int sig, siginfo_t *info, void *ucontext); //for child to handle SIGCONT
-void setup_sighandlers(); //sets up signal handlers with sigaction()
-
-void setup_child_sighandlers();
-void set_default_signal_mask();
-void save_terminal_settings();
-void restore_terminal_settings();
-void save_child_terminal_settings(Job *child);
-void restore_child_terminal_settings(Job *child);
-void handle_child(pid_t job_pid);
+void handle_child(Job *child); //called from main loop, updates joblist accordingly and passes struct info
+void handle_tstp(Job *child); //called from main loop, suspends job - updates joblist
 
 #endif
