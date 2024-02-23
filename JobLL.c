@@ -33,7 +33,7 @@ int find_job(const JobLL *l, pid_t pid) {
         index++;
     }
     //value not found
-    free(n);
+    free_node(n);
     return -1;
 
 } //returns the index of the job with a certain pid (counting from end of LL), otherwise -1
@@ -67,7 +67,7 @@ Job *remove_nth_job(JobLL *l, int n) {
         l->tail = current->prev;
     }
 
-    free(current);
+    free_node(current);
 
     if (l->size == ONE)
         reset_job_count(); //if last job in list, update size and reset job count
@@ -75,6 +75,20 @@ Job *remove_nth_job(JobLL *l, int n) {
     l->size--;
     return removed_job;
 } //removes nth node and returns Job in node
+
+Job *get_nth_job(JobLL *l, int n) {
+    if (n < 0 || n >= l->size || l->head == NULL) {
+        return NULL; 
+    }
+
+    // traverse the list until the nth node
+    struct Node *current = l->head;
+    for (int i = 0; i < n; i++) {
+        current = current->next;
+    }
+
+    return current->data;
+}
 
 Job *remove_first_job(JobLL *l) {
     if (l->size == EMPTY) {
@@ -91,7 +105,7 @@ Job *remove_first_job(JobLL *l) {
         l->head = head_node->next;
         l->head->prev = NULL;
     }
-    free(head_node);
+    free_node(head_node);
     l->size--;
     return removed_job;
 }
@@ -122,7 +136,7 @@ void print_jobs(const JobLL *l) {
         free(job);
         n = n->next;
     }
-    free(n);
+    free_node(n);
     printf("\n");
 } // print_jobs()
 
@@ -131,7 +145,8 @@ void free_all_jobs(JobLL *l) {
     while (current != NULL) {
         struct Node *next = current->next; // Store the next node before freeing the current one
         free_job(current->data); // Free the job associated with the current node
-        free(current); // Free the current node
+        free_node(current); // Free the current node
         current = next; // Move to the next node
     }
+    free(l);
 } // free_all_jobs()
