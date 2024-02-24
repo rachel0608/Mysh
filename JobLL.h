@@ -25,6 +25,7 @@ int size(const JobLL *l); //returns size of LL
 int empty(const JobLL *l); //returns if LL is empty (1=empty, 0=notempty)
 int find_job(const JobLL *l, pid_t pid); //returns the index of the job with a certain pid (counting from end of LL)
 Job *remove_nth_job(JobLL *l, int n); //removes nth node and returns Job in node
+Job *get_nth_job(JobLL *l, int n); //get nth node and returns Job in node
 Job *remove_first_job(JobLL *l); //removes head and returns Job
 void add_job(JobLL *l, Job *j); //add Job at end of LL
 void print_jobs(const JobLL *l); //prints all jobs in LL
