@@ -12,7 +12,8 @@ Job *new_job(pid_t pid, char *command) {
     J->command = command;
     J->status = 0; //status is running (0) by default
     job_count++;
-    J->handle_flag = 0; //child does not need handling (yet)
+    J->exit_info->chld_flag = 0; //child does not need handling (yet)
+    J->tstp_flag = 0; //child does not need handling
     return J;
 } //new_job()
 
@@ -60,3 +61,13 @@ void free_job(Job *job) {
         free(job); // Free the Job structure itself
     }
 } //free_job()
+
+void handle_flag_true(Job *job, char *flag, int boolean) {
+    if (strcmp(flag, "CHLD") == 0) {
+        job->exit_info->chld_flag = boolean; //turn on/off sig child flag
+    }
+    if (strcmp(flag, "TSTP") == 0) {
+        job->tstp_flag = boolean; //turn on/off sig tstp flag
+    }
+
+} //set handle flag to boolean (true or false)
