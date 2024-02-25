@@ -31,6 +31,12 @@ typedef struct {
     bool bg;
 } Command;
 
+typedef struct {
+    int chld_flag; //0 default, 1 for attention needed
+    int status_of_child; //status of child (to update to)
+    int exit_status; //exit status if child exited
+} SigchldInfo; //stores info on a stopped/terminated child
+
 //function prototypes
 char **parse_command(Command *command); 
 void execute_command(char **args, bool bg);
