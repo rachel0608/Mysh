@@ -5,36 +5,14 @@
     programs in response
 */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/wait.h>
-#include <readline/readline.h>
-#include <stdbool.h>
+#include "mysh.h"
 
-#define MAX_ARGS 5 // max number of arguments, including NULL
-#define DELIM " \t\n" // delimiters to tokenize user input command
-#define EXIT "exit" // built-in command: exit
-
-typedef struct {
-    char *cmdline;
-    bool bg;
-} Command;
-
-char **parse_command(Command *command);
-void execute_command(char **args, bool bg);
-int check_blank_input(char *command_line); 
-int is_built_in(char *args);
-void free_args(char **args);
-char *remove_space(char *str);
-bool check_syntax(char* input);
-char **tokenize(char *input, char *delim);
-Command **parse_to_structs(char *command_list);
-void free_command_list(Command **commands);
+pid_t shell_pid; //saves the pid of the shell
 
 int main() {
+    JobLL *job_list = new_list();
     bool exit = false;
+
     // continuosly prompt user to enter command
     while (true) {
         // print prompt
@@ -63,7 +41,6 @@ int main() {
                 continue;
             }
             
-            // make this a func
             // for each process, parse into args then execute
             for (int j = 0; commands[j] != NULL; j++) {
                 if (check_blank_input(commands[j]->cmdline)) {
@@ -87,15 +64,28 @@ int main() {
                             free_args(args);
                             exit = true;
                             break;
+                        } else if (strcmp(JOBS, args[0]) == 0) {
+                            print_jobs(job_list);
+                        } else if (strcmp(KILL, args[0]) == 0) {
+                            // Send a SIGTERM to the specified job and terminate it. You will notice that this does
+                            //not terminate many applications, as they register signal handlers to catch SIGTERM. 
+                            // Implement also the -9 flag to send SIGKILL, which can not be caught.
+                            kill_job(args);
+                        } else if (strcmp(FG, args[0]) == 0) {
+                            int argc = count_strings(args);
+                            fg(argc, args);
+                        } else if (strcmp(BG, args[0]) == 0) {
+                            int argc = count_strings(args);
+                            bg(argc, args);
                         }
-                    } else {
+                    } else { 
                         // execute command
-                        execute_command(args, commands[j]->bg);
+                        execute_command(args, commands[j]->bg, job_list);
                         free_args(args);
                     }
                 }
             }
-            free_command_list(commands);
+            //free_command_list(commands);
             if (exit) {
                 break;
             }
@@ -178,7 +168,7 @@ void free_args(char **args) {
  * @param args The arguments for the command
  * @param background Flag indicating whether the command should run in the background
  */
-void execute_command(char **args, bool background) {
+void execute_command(char **args, bool background, JobLL *job_list) {
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork");
@@ -191,13 +181,17 @@ void execute_command(char **args, bool background) {
             exit(EXIT_FAILURE);
         } 
     } else {
+        Job *child = new_job(pid, args[0]); //create Job
         if (!background) {
             int status;
             waitpid(pid, &status, 0);
+            // if (tcsetpgrp(STDIN_FILENO, shell_pid) == -1) { //give fg back to shell
+            //     perror("tcsetpgrp");
+            //     return;
+            // }
         } else {
-            printf("Sending job to background...\n");
-            // don't wait for child
-            // add child to the job queue
+            printf("[%d] %d\n", child->jid, pid); //print: [jid] <pid>
+            add_job(job_list, child); //add child to LL
         }
     }
 }
@@ -321,7 +315,7 @@ Command **parse_to_structs(char *command_list) {
         commands[i] = malloc(sizeof(Command));
         if (commands[i] == NULL) {
             perror("Memory allocation failed");
-            free_command_list(commands); 
+            //free_command_list(commands); 
             free_args(tokens);
             return NULL;
         }
@@ -347,12 +341,126 @@ Command **parse_to_structs(char *command_list) {
     return commands;
 }
 
-void free_command_list(Command **commands) {
-    // Free each command list and its elements
-    for (int i = 0; commands[i] != NULL; i++) {
-        free(commands[i]->cmdline);
-        free(commands[i]);
+int count_strings(char **arr) {
+    int count = 0;
+    while (arr[count] != NULL) {
+        count++;
     }
-    // Free the array of command lists
-    free(commands);
+    return count;
+}
+
+int extract_jid(const char *str) {
+    // Check if the string starts with '%' followed by a number
+    if (str[0] == '%' && atoi(&str[1]) != 0) {
+        return atoi(&str[1]);
+    } else {
+        // Return -1 to indicate failure (if the string doesn't match the format)
+        return -1;
+    }
+}
+
+// void free_command_list(Command **commands) {
+//     // Free each command list and its elements
+//     for (int i = 0; commands[i] != NULL; i++) {
+//         free(commands[i]->cmdline);
+//         free(commands[i]);
+//     }
+//     // Free the array of command lists
+//     free(commands);
+// }
+
+void bg(int argc, char **args) {
+    Job *j;
+    // if no jid is specified
+    if (argc < 2) {
+        j = get_last_suspended_job(job_list);
+    } else { // if jid is specified
+        int jid = extract_jid(args[1]);
+        if (jid == -1) {
+            printf("Invalid jid");
+            return;
+        }
+        // find the job
+        j = find_job_jid(job_list, jid);
+    }
+    if (j == NULL) {
+        printf("Cannot find job with specified jid\n");
+        return;
+    } 
+    // move the specified job to the foreground
+    bring_job_to_bg(j);
+}
+
+void fg(int argc, char **args) {
+    Job *j;
+    // if no jid is specified
+    if (argc < 2) {
+        // find the last job backgrounded
+    } else { // if jid is specified
+        int jid = extract_jid(args[1]);
+        if (jid == -1) {
+            printf("Invalid jid");
+            return;
+        }
+        // find the job
+        j = find_job_jid(job_list, jid);
+    }
+    if (j == NULL) {
+        printf("Cannot find job with specified jid\n");
+        return;
+    } 
+    // move the specified job to the foreground
+    bring_job_to_fg(j);
+}
+
+void bring_job_to_fg(Job *j) {
+    kill(-j->pid, SIGCONT);
+    j->status = 0; // set to running
+    int status;
+    waitpid(-j->pid, &status, WUNTRACED);
+    update_joblist(j->pid, 1);
+}
+
+void bring_job_to_bg(Job *j) {
+    printf("[%d] %d\n", j->jid, j->pid);
+}
+
+void kill_job(char **args) {
+    bool flag = false; // flag for -9
+    // invalid cmd
+    if (args[1] == NULL) {
+        fprintf(stderr, "Usage: kill <job_id>\n");
+        return;
+    }
+    // if there is -9 flag
+    if (args[2] != NULL && strcmp(args[1], "-9") == 0) {
+        int jid = extract_jid(args[2]);
+        // find the job with jid
+        Job *j = find_job_jid(job_list, jid);
+        if (j == NULL) {
+            printf("Cannot find job with specified jid\n");
+            return;
+        } 
+        // Send SIGKILL to the specified process
+        if (kill(-jid, SIGKILL) == -1) {
+            perror("kill");
+            return;
+        }
+        printf("Sent SIGKILL to job %d\n", jid);
+    } else { // no flag
+        int jid = extract_jid(args[1]);
+        // find the job with jid
+        Job *j = find_job_jid(job_list, jid);
+        if (j == NULL) {
+            printf("Cannot find job with specified jid\n");
+            return;
+        } 
+        
+        // Send SIGTERM to the process group 
+        if (kill(-jid, SIGTERM) == -1) {
+            perror("kill");
+            return;
+        }
+        printf("Sent SIGTERM to job %d\n", jid);
+    }
 }
