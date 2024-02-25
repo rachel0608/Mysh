@@ -33,10 +33,41 @@ int find_job(const JobLL *l, pid_t pid) {
         index++;
     }
     //value not found
-    free_node(n);
+    free(n);
     return -1;
 
 } //returns the index of the job with a certain pid (counting from end of LL), otherwise -1
+
+Job find_job_jid(const JobLL *l, int jid) {
+    struct Node *n = l->head;
+    //traverse LL until value is found or end is reached
+    while (n != NULL) {
+        if (n->data->jid == jid) {
+            return n->data; //value found, return the current index
+        }
+        //move to next node
+        n = n->next;
+        index++;
+    }
+    //value not found
+    free(n);
+    return NULL;
+
+}
+
+Job *get_nth_job(JobLL *l, int n) {
+    if (n < 0 || n >= l->size || l->head == NULL) {
+        return NULL; 
+    }
+
+    // traverse the list until the nth node
+    struct Node *current = l->head;
+    for (int i = 0; i < n; i++) {
+        current = current->next;
+    }
+
+    return current->data;
+}
 
 // Removes nth node and returns Job in node
 Job *remove_nth_job(JobLL *l, int n) {
@@ -67,7 +98,7 @@ Job *remove_nth_job(JobLL *l, int n) {
         l->tail = current->prev;
     }
 
-    free_node(current);
+    free(current);
 
     if (l->size == ONE)
         reset_job_count(); //if last job in list, update size and reset job count
@@ -75,20 +106,6 @@ Job *remove_nth_job(JobLL *l, int n) {
     l->size--;
     return removed_job;
 } //removes nth node and returns Job in node
-
-Job *get_nth_job(JobLL *l, int n) {
-    if (n < 0 || n >= l->size || l->head == NULL) {
-        return NULL; 
-    }
-
-    // traverse the list until the nth node
-    struct Node *current = l->head;
-    for (int i = 0; i < n; i++) {
-        current = current->next;
-    }
-
-    return current->data;
-}
 
 Job *remove_first_job(JobLL *l) {
     if (l->size == EMPTY) {
@@ -105,7 +122,7 @@ Job *remove_first_job(JobLL *l) {
         l->head = head_node->next;
         l->head->prev = NULL;
     }
-    free_node(head_node);
+    free(head_node);
     l->size--;
     return removed_job;
 }
@@ -127,6 +144,16 @@ void add_job(JobLL *l, Job *j) {
     l->size++;
 }
 
+Job *get_last_suspended_job(JobList *job_list) {
+    Job *last_bg_job = NULL;
+    for (int i = job_list->size - 1; i >= 0; i++) {
+        if (job_list->jobs[i]->status == 1) { 
+            last_bg_job = job_list->jobs[i];
+        }
+    }
+    return last_bg_job;
+}
+
 void print_jobs(const JobLL *l) {
     struct Node *n = l->head;
     printf("L(%d) \n", l->size);
@@ -136,7 +163,7 @@ void print_jobs(const JobLL *l) {
         free(job);
         n = n->next;
     }
-    free_node(n);
+    free(n);
     printf("\n");
 } // print_jobs()
 
@@ -145,8 +172,7 @@ void free_all_jobs(JobLL *l) {
     while (current != NULL) {
         struct Node *next = current->next; // Store the next node before freeing the current one
         free_job(current->data); // Free the job associated with the current node
-        free_node(current); // Free the current node
+        free(current); // Free the current node
         current = next; // Move to the next node
     }
-    free(l);
 } // free_all_jobs()
