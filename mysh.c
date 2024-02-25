@@ -7,24 +7,37 @@
 
 #include "mysh.h"
 
+//global vars
+pid_t foreground_pid = -1;  // Initialize to an invalid PID, set in execute_command
+char **foreground_command; //init every fg command here
+struct termios saved_terminal_settings; // Global variable to store the shell's terminal settings
+JobLL *job_list; //global job list of all jobs
+pid_t shell_pid; //saves the pid of the shell
+
 int main() {
     
     setup_sighandlers();
     bool exit = false;
+    job_list = new_list();
+    shell_pid = getpid();
 
     while (true) {
-		if (sigchld_received) {
-            block_sigchld(TRUE); //block SIGCHLD
-			update_joblist(pid_to_update, STATUS_TERMINATE); //terminate job with pid_to_update	
-            sigchld_received = FALSE; // Reset the flag 	
-            block_sigchld(FALSE); //unblock SIGCHLD
-		}
-        if (sigtstp_received) {
-            pid_t curr_foreground_pid = foreground_pid; //set temp pid to current fg job's pid
-            kill(curr_foreground_pid, SIGSTOP);  // Send SIGSTOP to the foreground process
-            update_joblist(curr_foreground_pid, STATUS_SUSPEND); //suspend job in the foreground
-            sigtstp_received = FALSE; // Reset the flag 	
+
+        //iter through joblist + handle jobs with flags on
+        block_sigchld(TRUE); //block SIGCHLD
+        struct Node *current = job_list->head;
+        for (int i = 0; i < size(job_list); i++) {
+            if (current->data->exit_info.chld_flag == 1) { //handle chld flag
+                handle_child(current->data); //handle job
+                current->data->exit_info.chld_flag = 0; //reset flag
+            }
+            if (current->data->tstp_flag == 1) { //handle tstp flag
+                handle_tstp(current->data); //handle job
+                current->data->tstp_flag = 0; //reset flag
+            }
+            current = current->next;
         }
+        block_sigchld(FALSE); //unblock SIGCHLD
 
         // print prompt
         char *input = readline("$ ");
@@ -63,7 +76,6 @@ int main() {
                     // parse into args
                     char **args = parse_command(commands[j]);
                     free(commands[j]->cmdline);
-                    free(commands[j]);
                     if (args == NULL) {
                         printf("Error parsing command.\n");
                         continue;
@@ -76,28 +88,41 @@ int main() {
                             free_args(args);
                             exit = true;
                             break;
+                        } else if (strcmp(JOBS, args[0]) == 0) {
+                            printf("Test print jobs\n");
+                            print_jobs(job_list);
+                        } else if (strcmp(KILL, args[0]) == 0) {
+                            // Send a SIGTERM to the specified job and terminate it. You will notice that this does
+                            //not terminate many applications, as they register signal handlers to catch SIGTERM. 
+                            // Implement also the -9 flag to send SIGKILL, which can not be caught.
+                            kill_job(args);
+                        } else if (strcmp(FG, args[0]) == 0) {
+                            int argc = count_strings(args);
+                            fg(argc, args);
+                        } else if (strcmp(BG, args[0]) == 0) {
+                            int argc = count_strings(args);
+                            bg(argc, args);
                         }
                     } else {
                         // execute command
                         execute_command(args, commands[j]->bg);
                         free_args(args);
+                        free(commands[j]);
                     }
                 }
             }
-            free_command_list(commands);
             if (exit) {
                 break;
             }
+            //test
+            //free_args(command_list);
+            free(input);
+            
         }
-
-        free_args(command_list);
-        free(input);
-
         if (exit) {
             break;
         }
     }
-
     return 0;
 }
 
@@ -140,7 +165,7 @@ int check_blank_input(char *command_line) {
  * @return true if it is a built-in command, false otherwise
  */
 int is_built_in(char *args) {
-    char *built_in_commands[] = {EXIT, NULL};
+    char *built_in_commands[] = {EXIT, JOBS, KILL, FG, BG, NULL};
     for (int i = 0; built_in_commands[i] != NULL; i++) {
         if (strcmp(args, built_in_commands[i]) == 0) {
             return true; 
@@ -169,28 +194,64 @@ void free_args(char **args) {
  * @param background Flag indicating whether the command should run in the background
  */
 void execute_command(char **args, bool background) {
+    save_terminal_settings(); //Save the original terminal settings
     pid_t pid = fork();
-    if (pid < 0) {
+    
+    if (pid < 0) { //if error
         perror("fork");
         free_args(args);
-        exit(EXIT_FAILURE);
-    } else if (pid == 0) {
-        setpgid(0, 0);  // Set the child process to a new process group
+        return;
 
-        if (execvp(args[0], args) == -1) {
+    } else if (pid == 0) { //in child
+
+        pid_t child_pid = getpid(); // get child's pid
+        if (setpgid(child_pid, child_pid) == -1) {  // Assign the child process to a new process group with its own PID
+            perror("setpgid");
+            return;
+        }
+        setup_child_sighandlers(); //install child sig handlers
+        set_default_signal_mask(); //set signal masks back to default before replacing child
+        
+        if (execvp(args[0], args) == -1) { //execute/replace child
             perror("execvp");
             free_args(args);
-            exit(EXIT_FAILURE);
+            return;
         } 
-    } else {
-        foreground_pid = pid; //set foreground pid global to be used in case of ctrl z
-        if (!background) {
-            int status;
-            waitpid(pid, &status, 0);
-        } else {
-            printf("Sending job to background...\n");
-            // don't wait for child
-            // add child to the job queue
+
+    } else { //in parent (shell)
+        pid_t wpid;
+        int status;
+        setpgid(pid, pid);  // Set the child process to a new process group
+        Job *child = new_job(pid, args); //create Job
+
+        if (!background) { //if job is foregrounded
+            foreground_command = args; //set foreground command global
+            block_sigchld(TRUE); //block signals before accessing shared memory
+            foreground_pid = pid; //set foreground pid global to be used in case of ctrl z
+            block_sigchld(FALSE); //unblock signals after accessing shared memory
+            if (tcsetpgrp(STDIN_FILENO, pid) == -1) { //give terminal to child
+                perror("tcsetpgrp");
+                return;
+            }
+            wpid = waitpid(pid, &status, 0); //shell waits for child process
+            //if child was interrupted, sig handler will handle
+            //else child is done and no action necessary from shell
+            if (tcsetpgrp(STDIN_FILENO, shell_pid) == -1) { //give fg back to shell
+                perror("tcsetpgrp");
+                return;
+            }
+            block_sigchld(TRUE); //block signals before accessing shared memory
+            foreground_pid = shell_pid; //update foreground_pid to shell
+            block_sigchld(FALSE); //unblock signals after accessing shared memory
+            restore_terminal_settings(); //restore original shell settings
+        
+        } else { //if job is backgrounded
+
+            printf("[%d] %d\n", child->jid, pid); //print: [jid] <pid>
+            block_sigchld(TRUE); //block signals before accessing shared memory
+            add_job(job_list, child); //add child to LL
+            block_sigchld(FALSE); //unblock signals after accessing shared memory
+            wpid = waitpid(pid, &status, WNOHANG | WUNTRACED);
         }
     }
 }
@@ -261,8 +322,8 @@ char **tokenize(char *input, char *delim) {
         tokens[token_count] = strdup(token);
         if (tokens[token_count] == NULL) {
             perror("strdup");
-            free_args(tokens);
-            exit(EXIT_FAILURE);
+            //free_args(tokens);
+            return NULL;
         }
         token = strtok(NULL, delim);
         token_count++;
@@ -270,7 +331,7 @@ char **tokenize(char *input, char *delim) {
 
     if (token_count == MAX_ARGS - 1 && token != NULL) {
         printf("Error: Too many arguments\n");
-        free_args(tokens);
+        //free_args(tokens);
         return NULL;
     }
 
@@ -314,7 +375,6 @@ Command **parse_to_structs(char *command_list) {
         commands[i] = malloc(sizeof(Command));
         if (commands[i] == NULL) {
             perror("Memory allocation failed");
-            free_command_list(commands); 
             free_args(tokens);
             return NULL;
         }
@@ -340,23 +400,65 @@ Command **parse_to_structs(char *command_list) {
     return commands;
 }
 
-void free_command_list(Command **commands) {
-    // Free each command list and its elements
-    for (int i = 0; commands[i] != NULL; i++) {
-        free(commands[i]->cmdline);
-        free(commands[i]);
+void update_joblist(pid_t pid, int status_to_update) {
+    block_sigchld(TRUE); //block signals before accessing shared memory            
+    if ((pid == foreground_pid || find_job(job_list, pid) < 0)) { //job to update is in the foreground
+        if (status_to_update == STATUS_TERMINATE) {  
+
+            //do not print anything-do nothing?
+            return;
+
+        } else if (status_to_update == STATUS_SUSPEND) {
+
+            if (tcsetpgrp(STDIN_FILENO, shell_pid) == -1) { //give term back to shell
+                perror("tcsetpgrp");
+                return;
+            } 
+            restore_terminal_settings(); //restore shell term settings
+            print_jobs(job_list); //print jobs
+            //make job last job suspended/backgrounded?
+
+        } //test
     }
-    // Free the array of command lists
-    free(commands);
-}
+    else { //job to update is in the joblist
+        if (status_to_update == STATUS_TERMINATE) {
 
-void update_joblist(pid_t pid_to_update, int status_to_update) {
-	//if joblist doesn't contain job with pid_to_update, return error
-	//find job in list
-		//if STATUS_TERMINATE, update job status, print to terminal, and remove from list
-		//if STATUS_SUSPEND (aka pause a running job) update job status, add to list (?), print jobs
-		//if STATUS_RESUME (aka resume suspended job) kill -CONT <pid>, update job status, print jobs
+            int index = find_job(job_list, pid);
+            Job *temp = get_nth_job(job_list, index);
+            temp->status = STATUS_TERMINATE; //update job status
+            printf("[%d] Done\t\t%s\n", temp->jid, temp->command[0]); //print to terminal exit status global: [jid]+ Done\t\t./p
+            temp = NULL; //unlink pointer to avoid misuse
+            free(remove_nth_job(job_list, index)); //remove from list
+            
 
+        } else if (status_to_update == STATUS_SUSPEND) {
+            
+            Job *temp = get_nth_job(job_list, find_job(job_list, pid));
+            temp->status = STATUS_SUSPEND; //update job status
+            printf("[%d] Stopped\t\t%s\n", temp->jid, temp->command[0]); //print status
+            temp = NULL;
+            //make temp last job suspended?
+
+        } /*else if (status_to_update == STATUS_RESUME) {
+            
+            kill(-pid, SIGCONT); //send continue signal to all processes in PG
+            //in sigcont handler
+                //update job status
+                //print jobs
+                //make job last job resumed?
+
+        } else if (status_to_update == STATUS_RESUME_FG) {
+            
+            //if fg is called on the job: give job the terminal (below), update status, and resume execution
+            //print jobs
+
+            //save shell term settings
+            //give term to pid
+            restore_child_terminal_settings(get_nth_job(job_list, find_job(job_list, pid))); //restore pid term settings
+        }*/
+    }
+
+    block_sigchld(FALSE); //unblock signals after accessing shared memory
 }
 
 void block_sigchld(int block) {
@@ -371,33 +473,248 @@ void block_sigchld(int block) {
     }
 }
 
+//set Job's flag-> make a struct to contain flag, status, and exit status?
 void sig_chld_handler(int sig, siginfo_t *info, void *ucontext) {
-    block_sigchld(TRUE); //block SIGCHLD
-    pid_to_update = info->si_pid;	//store pid and status in globals (critical region)
-    sigchld_received = TRUE;	//set sigchld_received flag to update JobLL
-    block_sigchld(FALSE); //unblock SIGCHLD
+    if (info->si_pid == foreground_pid) {
+       
+    }
+    else {
+        block_sigchld(TRUE); //block signals before accessing shared memory
+        Job *temp = get_nth_job(job_list, find_job(job_list, info->si_pid));
+        temp->exit_info.chld_flag = TRUE; //turn on child's flag
+        temp->exit_info.status_of_child = info->si_code; //store status of child
+        temp->exit_info.exit_status = info->si_status; //store exit status of interruption
+        temp = NULL; //unlink pointer to avoid misuse
+        block_sigchld(FALSE); //unblock signals after accessing shared memory
+    }
 }
 
-void sig_tstp_handler(int signo) {
-    sigtstp_received = TRUE;	//set sigtstp_received flag to stop fg job
+//to be called from main loop to do necessary work on a SIGCHLDed job
+void handle_child(Job *child) {
+    if (child->exit_info.status_of_child == CLD_EXITED || child->exit_info.status_of_child == CLD_KILLED)
+        update_joblist(child->pid, STATUS_TERMINATE); //terminate child
+    else if (child->exit_info.status_of_child == CLD_STOPPED)
+	    //do nothing, already handled by handle_tstp()
+        return;
+}
+
+//set Job's flag->interrupted
+void sig_tstp_handler(int sig, siginfo_t *info, void *ucontext) {
+    block_sigchld(TRUE); //block signals before accessing shared memory
+    printf("test\n");
+    Job *suspended_job = new_job(info->si_pid, foreground_command); //create new job
+    suspended_job->status = STATUS_SUSPEND; //update job status
+    save_child_terminal_settings(suspended_job); //save pid term settings
+    suspended_job->tstp_flag = TRUE; //turn on interrupt flag
+    add_job(job_list, suspended_job); //add to list
+
+    block_sigchld(FALSE); //unblock signals after accessing shared memory
+} 
+
+//to be called from main loop to do necessary work on an interrupted/stopped job
+void handle_tstp(Job *child) {
+    update_joblist(child->pid, STATUS_SUSPEND); //suspend child
+}
+
+void sig_cont_handler(int sig, siginfo_t *info, void *ucontext) {
+    update_joblist(getpid(), STATUS_RESUME_FG);
+    //handle SIGCONT from parent process attempting to resume child process that is suspended
 }
 
 void setup_sighandlers() {
-    struct sigaction sa_tstp, sa_chld;
+    //ignore interrupt signals
+    signal(SIGTSTP, SIG_IGN);
+    signal(SIGTERM, SIG_IGN);
+    signal(SIGINT, SIG_IGN);
+    signal(SIGTTIN, SIG_IGN);
+    signal(SIGTTOU, SIG_IGN);
+    signal(SIGQUIT, SIG_IGN);
+    struct sigaction sa_chld;
     //set up signal handler for SIGCHLD
     sa_chld.sa_sigaction = sig_chld_handler;     
     sigemptyset(&sa_chld.sa_mask);
-    sa_chld.sa_flags = SA_SIGINFO; 
+    sa_chld.sa_flags = SA_RESTART | SA_SIGINFO; 
     if (sigaction(SIGCHLD, &sa_chld, NULL) == -1) { 
 	    perror("Error setting up sigchld handler"); 
-	    exit(EXIT_FAILURE); 
+	    return;
     }
-    // Set up the signal handler for SIGTSTP (Ctrl-Z)
-    sa_tstp.sa_handler = sig_tstp_handler;
+}
+
+void setup_child_sighandlers() {
+    struct sigaction sa_tstp;
+    //set up signal handler for SIGTSTP
+    sa_tstp.sa_sigaction = sig_tstp_handler;     
     sigemptyset(&sa_tstp.sa_mask);
-    sa_tstp.sa_flags = 0;
+    sa_tstp.sa_flags = SA_RESTART | SA_SIGINFO; 
     if (sigaction(SIGTSTP, &sa_tstp, NULL) == -1) { 
 	    perror("Error setting up sigtstp handler"); 
-	    exit(EXIT_FAILURE); 
+	    return; 
+    }
+}
+
+void set_default_signal_mask() {
+    sigset_t default_mask;
+
+    // Initialize a signal set representing the default signal mask
+    if (sigemptyset(&default_mask) == -1 || sigfillset(&default_mask) == -1) {
+        perror("sigemptyset/sigfillset");
+        return;
+    }
+
+    // Set the default signal mask
+    if (sigprocmask(SIG_SETMASK, &default_mask, NULL) == -1) {
+        perror("sigprocmask");
+        return;
+    }
+}
+
+void save_terminal_settings() {
+    // Save the current terminal settings
+    block_sigchld(TRUE); //block signals before accessing shared memory
+    if (tcgetattr(STDIN_FILENO, &saved_terminal_settings) == -1) {
+        block_sigchld(FALSE); //unblock signals after accessing shared memory
+        perror("tcgetattr");
+        return;
+    }
+    block_sigchld(FALSE); //unblock signals after accessing shared memory
+}
+
+void restore_terminal_settings() {
+    // Restore the original terminal settings
+    block_sigchld(TRUE); //block signals before accessing shared memory
+    if (tcsetattr(STDIN_FILENO, TCSADRAIN, &saved_terminal_settings) == -1) {
+        block_sigchld(FALSE); //unblock signals after accessing shared memory
+        perror("tcsetattr");
+        return;
+    }
+    block_sigchld(FALSE); //unblock signals after accessing shared memory
+}
+
+void save_child_terminal_settings(Job *child) {
+    // Save the current terminal settings for the child
+    if (tcgetattr(STDIN_FILENO, child->setting) == -1) {
+        perror("tcgetattr");
+        return;
+    }
+}
+
+void restore_child_terminal_settings(Job *child) {
+    // Restore the original terminal settings for the child
+    if (tcsetattr(STDIN_FILENO, TCSADRAIN, child->setting) == -1) {
+        perror("tcsetattr");
+        return;
+    }
+}
+
+int count_strings(char **arr) {
+    int count = 0;
+    while (arr[count] != NULL) {
+        count++;
+    }
+    return count;
+}
+
+int extract_jid(const char *str) {
+    // Check if the string starts with '%' followed by a number
+    if (str[0] == '%' && atoi(&str[1]) != 0) {
+        return atoi(&str[1]);
+    } else {
+        // Return -1 to indicate failure (if the string doesn't match the format)
+        return -1;
+    }
+}
+
+void bg(int argc, char **args) {
+    Job *j;
+    // if no jid is specified
+    if (argc < 2) {
+        j = get_last_suspended_job(job_list);
+    } else { // if jid is specified
+        int jid = extract_jid(args[1]);
+        if (jid == -1) {
+            printf("Invalid jid");
+            return;
+        }
+        // find the job
+        j = find_job_jid(job_list, jid);
+    }
+    if (j == NULL) {
+        printf("Cannot find job with specified jid\n");
+        return;
+    } 
+    // move the specified job to the foreground
+    bring_job_to_bg(j);
+} //resume most recently suspended job in bg
+
+void fg(int argc, char **args) {
+    Job *j;
+    // if no jid is specified
+    if (argc < 2) {
+        // find the last job backgrounded
+    } else { // if jid is specified
+        int jid = extract_jid(args[1]);
+        if (jid == -1) {
+            printf("Invalid jid");
+            return;
+        }
+        // find the job
+        j = find_job_jid(job_list, jid);
+    }
+    if (j == NULL) {
+        printf("Cannot find job with specified jid\n");
+        return;
+    } 
+    // move the specified job to the foreground
+    bring_job_to_fg(j);
+} //most recently bged job into fg
+
+void bring_job_to_fg(Job *j) {
+    kill(-j->pid, SIGCONT);
+    j->status = 0; // set to running
+    int status;
+    waitpid(-j->pid, &status, WUNTRACED);
+}
+
+void bring_job_to_bg(Job *j) {
+    printf("[%d] %d\n", j->jid, j->pid);
+}
+
+void kill_job(char **args) {
+    bool flag = false; // flag for -9
+    // invalid cmd
+    if (args[1] == NULL) {
+        fprintf(stderr, "Usage: kill <job_id>\n");
+        return;
+    }
+    // if there is -9 flag
+    if (args[2] != NULL && strcmp(args[1], "-9") == 0) {
+        int jid = extract_jid(args[2]);
+        // find the job with jid
+        Job *j = find_job_jid(job_list, jid);
+        if (j == NULL) {
+            printf("Cannot find job with specified jid %d\n", jid);
+            return;
+        } 
+        // Send SIGKILL to the specified process
+        if (kill(-jid, SIGKILL) == -1) {
+            perror("kill");
+            return;
+        }
+        printf("Sent SIGKILL to job %d\n", jid);
+    } else { // no flag
+        int jid = extract_jid(args[1]);
+        // find the job with jid
+        Job *j = find_job_jid(job_list, jid);
+        if (j == NULL) {
+            printf("Cannot find job with specified jid %d\n", jid);
+            return;
+        } 
+
+        // Send SIGTERM to the process group 
+        if (kill(-jid, SIGTERM) == -1) {
+            perror("kill");
+            return;
+        }
+        printf("Sent SIGTERM to job %d\n", jid);
     }
 }
