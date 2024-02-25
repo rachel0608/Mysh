@@ -15,8 +15,9 @@ typedef struct Job {
     char *command; //command being executed
     int status; // Running (0) or Suspended (1) or Terminated/Done (2)
     struct termios* setting; //terminal settings info
-    //pointer to last job backgrounded/foregrounded
-    volatile sig_atomic_t handle_flag; // flag for sig_chld_handler to update
+    int tstp_flag; //flag for sig_tstp handler to update
+    SigchldInfo exit_info; //package of state_change info for child, for use of shell, includes flag
+        //pointer to last job backgrounded/foregrounded?
 }   Job;
 
 Job *new_job(pid_t pid, char *command); //given process ID and command, create Job (init as running by default) and return pointer
@@ -29,6 +30,6 @@ char *job_to_string(const Job *j);
 
 void set_job_status(Job *j, int status); //suspended = 0, running = 1
 void free_job(Job *job); //free memory allocated for Job struct
-void handle_flag_true(Job *job, int boolean); //set handle flag to boolean (true or false)
+void handle_flag_true(Job *job, char *flag, int boolean); //set handle flag to boolean (true or false)
 
 #endif
