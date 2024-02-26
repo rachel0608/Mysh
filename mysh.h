@@ -29,6 +29,7 @@
 #define STATUS_RESUME   0
 #define TRUE 1
 #define FALSE 0
+#define INVALID -1
 
 typedef struct {
     char *cmdline;
