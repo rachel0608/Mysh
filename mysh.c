@@ -25,6 +25,7 @@ int main() {
 
         //iter through joblist + handle jobs with flags on
         block_sigchld(TRUE); //block SIGCHLD
+        printf("about to iter\n");
         struct Node *current = job_list->head;
         for (int i = 0; i < size(job_list); i++) {
             if (current->data->exit_info.chld_flag == 1) { //handle chld flag
@@ -209,8 +210,8 @@ void execute_command(char **args, bool background) {
             perror("setpgid");
             return;
         }
-        setup_child_sighandlers(); //install child sig handlers
         set_default_signal_mask(); //set signal masks back to default before replacing child
+        setup_child_sighandlers(); //install child sig handlers
         
         if (execvp(args[0], args) == -1) { //execute/replace child
             perror("execvp");
@@ -222,12 +223,11 @@ void execute_command(char **args, bool background) {
         pid_t wpid;
         int status;
         setpgid(pid, pid);  // Set the child process to a new process group
-        Job *child = new_job(pid, args); //create Job
 
         if (!background) { //if job is foregrounded
-            foreground_command = args; //set foreground command global
             block_sigchld(TRUE); //block signals before accessing shared memory
             foreground_pid = pid; //set foreground pid global to be used in case of ctrl z
+            foreground_command = args; //set foreground command global
             block_sigchld(FALSE); //unblock signals after accessing shared memory
             if (tcsetpgrp(STDIN_FILENO, pid) == -1) { //give terminal to child
                 perror("tcsetpgrp");
@@ -246,7 +246,7 @@ void execute_command(char **args, bool background) {
             restore_terminal_settings(); //restore original shell settings
         
         } else { //if job is backgrounded
-
+            Job *child = new_job(pid, args); //create Job
             printf("[%d] %d\n", child->jid, pid); //print: [jid] <pid>
             block_sigchld(TRUE); //block signals before accessing shared memory
             add_job(job_list, child); //add child to LL
@@ -410,15 +410,16 @@ void update_joblist(pid_t pid, int status_to_update) {
 
         } else if (status_to_update == STATUS_SUSPEND) {
 
-            if (tcsetpgrp(STDIN_FILENO, shell_pid) == -1) { //give term back to shell
+            printf("print in updatejobs\n");
+            if (tcsetpgrp(STDIN_FILENO, shell_pid) == INVALID) { //give term back to shell
                 perror("tcsetpgrp");
                 return;
             } 
             restore_terminal_settings(); //restore shell term settings
             print_jobs(job_list); //print jobs
             //make job last job suspended/backgrounded?
-
-        } //test
+            return;
+        }
     }
     else { //job to update is in the joblist
         if (status_to_update == STATUS_TERMINATE) {
@@ -500,25 +501,30 @@ void handle_child(Job *child) {
 
 //set Job's flag->interrupted
 void sig_tstp_handler(int sig, siginfo_t *info, void *ucontext) {
-    block_sigchld(TRUE); //block signals before accessing shared memory
-    printf("test\n");
-    Job *suspended_job = new_job(info->si_pid, foreground_command); //create new job
-    suspended_job->status = STATUS_SUSPEND; //update job status
-    save_child_terminal_settings(suspended_job); //save pid term settings
-    suspended_job->tstp_flag = TRUE; //turn on interrupt flag
-    add_job(job_list, suspended_job); //add to list
+    //block_sigchld(TRUE); //block signals before accessing shared memory
 
-    block_sigchld(FALSE); //unblock signals after accessing shared memory
+    //Job *suspended_job = new_job(info->si_pid, foreground_command); //create new job
+    //suspended_job->status = STATUS_SUSPEND; //update job status
+    //save_child_terminal_settings(suspended_job); //save pid term settings
+    //suspended_job->tstp_flag = TRUE; //turn on interrupt flag
+    //add_job(job_list, suspended_job); //add to list
+    return;
+    //block_sigchld(FALSE); //unblock signals after accessing shared memory
 } 
 
 //to be called from main loop to do necessary work on an interrupted/stopped job
 void handle_tstp(Job *child) {
+    printf("in handle_tstp()\n");
     update_joblist(child->pid, STATUS_SUSPEND); //suspend child
 }
 
 void sig_cont_handler(int sig, siginfo_t *info, void *ucontext) {
     update_joblist(getpid(), STATUS_RESUME_FG);
     //handle SIGCONT from parent process attempting to resume child process that is suspended
+}
+
+void sig_int_handler(int signo) {
+    return;
 }
 
 void setup_sighandlers() {
@@ -543,26 +549,41 @@ void setup_sighandlers() {
 void setup_child_sighandlers() {
     struct sigaction sa_tstp;
     //set up signal handler for SIGTSTP
-    sa_tstp.sa_sigaction = sig_tstp_handler;     
+    sa_tstp.sa_sigaction = sig_tstp_handler;
     sigemptyset(&sa_tstp.sa_mask);
     sa_tstp.sa_flags = SA_RESTART | SA_SIGINFO; 
     if (sigaction(SIGTSTP, &sa_tstp, NULL) == -1) { 
 	    perror("Error setting up sigtstp handler"); 
 	    return; 
     }
+
+    struct sigaction sa_int;
+    sa_int.sa_handler = sig_int_handler;
+    sigemptyset(&sa_int.sa_mask);
+    sa_int.sa_flags = SA_RESTART | SA_SIGINFO; 
+    if (sigaction(SIGINT, &sa_int, NULL) == -1) { 
+	    perror("Error setting up sigint handler"); 
+	    return; 
+    }
 }
 
 void set_default_signal_mask() {
     sigset_t default_mask;
+    /* sigaddset(&default_mask, SIGTSTP);
+    sigaddset(&default_mask, SIGTERM);
+    sigaddset(&default_mask, SIGINT);
+    sigaddset(&default_mask, SIGTTIN);
+    sigaddset(&default_mask, SIGTTOU);
+    sigaddset(&default_mask, SIGQUIT); */
 
-    // Initialize a signal set representing the default signal mask
-    if (sigemptyset(&default_mask) == -1 || sigfillset(&default_mask) == -1) {
+    // make default mask empty
+    if (sigemptyset(&default_mask) == INVALID) {
         perror("sigemptyset/sigfillset");
         return;
     }
 
-    // Set the default signal mask
-    if (sigprocmask(SIG_SETMASK, &default_mask, NULL) == -1) {
+    // mask the empty set (mask 0 signals)
+    if (sigprocmask(SIG_SETMASK, &default_mask, NULL) == INVALID) {
         perror("sigprocmask");
         return;
     }
