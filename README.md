@@ -1,5 +1,7 @@
 Names: Julia Rieger, Rachel Nguyen
 
+Mysh is a simple shell program that accepts lines of text as input and executes programs in response. It provides a basic command-line interface for users to interact with their system.
+
 Shell Structure:
 Files:  mysh.c: contains main loop and implements helper functions for mysh.h functions
         mysh.h: header file for mysh.c
@@ -31,7 +33,7 @@ Fully Implemented:
 
 Partially Implemented:
         Backgrounding with &: inconsistent segfault when running in the bg and later executing in the fg
-        Parsing: segfault/double free when tokenizing with ;
+        Parsing: segfault/double free memory error when tokenizing with ";"
         Joblist: does not always print correctly the first time (must execute jobs multiple times) 
                 not readding jobs to the list correctly- jobs only prints 1 done at a time
         Ctrl-Z: stops the program but gets stuck
@@ -42,14 +44,19 @@ Partially Implemented:
 Testing:
     testJobLL.c -> tests JobLL (works with memory leaks)
         includes testing of all JobLL functions and several Job functions
+        
     test cases: ./p -> running in foreground, background, in succession + grouped
                     tested in combination with ls, emacs, jobs
+                    
                 Signals -> Ctrl-C, Ctrl-Z during both fg and bg processes
 
                 Parsing/Backgrounding with &:
-                        ./p & ; ls
-                        ./p ; ls
-                        ./p 10 & ./p 10 & ./p 10 &
-                        ./p ;; ./p
-# Mysh
-Mysh is a shell that allows user to interact with the underlying operating system. It supports backgrounding and project suspension.
+                        - Parsing with "&&", "&;", ";&", ";;" or commands starting with "&" and ";" gives syntax error near delim
+                                ./p & ; ls (should be ./p & ls)
+                                ./p ;    ; ls
+                                & ./p 
+                        - Running fg and bg in succession
+                                ./p ; ls 
+                                ./p 10 & ./p 10 & ./p 10 &
+                                ./p ; ./p ; ./p 
+                                ./p;./p&./p (no space)
