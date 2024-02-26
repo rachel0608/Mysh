@@ -6,6 +6,7 @@ int job_count = 1; //global var to keep track of how many jobs are in list
 
 //given process ID and command, create Job (init as running by default)
 Job *new_job(pid_t pid, char **command) {
+    printf("new job\n");
     Job *J = malloc(sizeof(Job));
     J->jid = job_count;
     J->pid = pid;
